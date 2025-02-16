@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import sys
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 from google.oauth2.credentials import Credentials
@@ -8,6 +9,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import pickle
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 # 配置
 SCOPES = [
@@ -20,7 +22,16 @@ ALLOWED_EMAILS = set(st.secrets["google_oauth"]["allowed_emails"])
 
 def is_cloud_env():
     """检查是否在Streamlit Cloud环境中运行"""
-    return os.getenv('STREAMLIT_CLOUD_ENV') is not None
+    return (
+        'STREAMLIT_CLOUD_ENV' in os.environ or  # Streamlit Cloud 特定环境变量
+        'STREAMLIT_SHARING_PORT' in os.environ or  # Streamlit Sharing 特定环境变量
+        'STREAMLIT_SERVER_PORT' in os.environ or  # Streamlit 服务器端口
+        not sys.stdout.isatty()  # 检查是否有交互式终端
+    )
+
+def is_local_env() -> bool:
+    """检查是否在本地开发环境中运行"""
+    return 'STREAMLIT_CLOUD_ENV' not in os.environ
 
 def try_port(flow, start_port: int = 8502, max_attempts: int = 3) -> Optional[Credentials]:
     """尝试在不同端口运行OAuth服务器"""
@@ -32,6 +43,22 @@ def try_port(flow, start_port: int = 8502, max_attempts: int = 3) -> Optional[Cr
                 raise
             continue
     return None
+
+def get_auth_url(client_config: Dict) -> Tuple[str, InstalledAppFlow]:
+    """生成授权URL并返回flow对象"""
+    flow = InstalledAppFlow.from_client_config(
+        client_config,
+        SCOPES,
+        redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
+    )
+    
+    auth_url, _ = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='consent'  # 强制显示同意页面以确保获取refresh token
+    )
+    
+    return auth_url, flow
 
 class GoogleAuthManager:
     def __init__(self):
@@ -49,8 +76,13 @@ class GoogleAuthManager:
         # 如果没有有效凭据，创建新的OAuth flow
         if not self.creds or not self.creds.valid:
             if self.creds and self.creds.expired and self.creds.refresh_token:
-                self.creds.refresh(Request())
-            else:
+                try:
+                    self.creds.refresh(Request())
+                except Exception as e:
+                    st.error(f"刷新令牌失败: {str(e)}")
+                    self.creds = None
+            
+            if not self.creds:
                 # 从secrets创建client config
                 client_config = {
                     "web": {
@@ -62,44 +94,57 @@ class GoogleAuthManager:
                     }
                 }
                 
-                flow = InstalledAppFlow.from_client_config(
-                    client_config,
-                    SCOPES,
-                    redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
-                )
+                auth_url, flow = get_auth_url(client_config)
                 
-                # 根据环境选择不同的认证方式
-                if is_cloud_env():
-                    # 云环境：使用授权URL和手动输入code的方式
-                    auth_url = flow.authorization_url()[0]
+                # 显示授权说明
+                st.markdown("""
+                ### Google 登录说明
+                
+                1. **右键点击**下方链接，选择"在新标签页中打开"
+                2. 使用允许的Google账号登录并授权
+                3. 在新标签页中，当看到"此站点无法访问"时，从地址栏复制完整的URL
+                4. 将URL粘贴到下方输入框
+                
+                **提示：** 
+                - 一定要右键在新标签页中打开，否则URL会消失
+                - 看到"此站点无法访问"是正常的，此时URL中已包含授权码
+                """)
+                
+                # 创建两列布局
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    st.markdown(f"[👉 点击此处访问授权页面]({auth_url})")
+                    st.caption("记得右键在新标签页中打开 ↗")
+                
+                with col2:
+                    redirect_url = st.text_input(
+                        "请输入重定向URL：",
+                        help="从浏览器地址栏复制整个URL（包含code参数）"
+                    )
                     
-                    st.markdown(f"""
-                    ### Google 登录
-                    1. [点击此处访问Google授权页面]({auth_url})
-                    2. 登录并授权后，将重定向URL中的code参数复制到下面的输入框
-                    """)
-                    
-                    code = st.text_input("请输入授权码：")
-                    if code:
-                        try:
-                            flow.fetch_token(code=code)
-                            self.creds = flow.credentials
-                            st.session_state.oauth_credentials = self.creds
-                            st.success("认证成功！")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"认证失败：{str(e)}")
-                    return
-                else:
-                    # 本地环境：使用本地服务器
+                if redirect_url:
                     try:
-                        self.creds = try_port(flow)
-                        if not self.creds:
-                            st.error("无法启动认证服务器，请检查端口是否被占用。")
-                            return
+                        # 从URL中提取授权码
+                        parsed_url = urlparse(redirect_url)
+                        code = parse_qs(parsed_url.query)['code'][0]
+                        
+                        flow.fetch_token(code=code)
+                        self.creds = flow.credentials
+                        st.session_state.oauth_credentials = self.creds
+                        st.success("认证成功！页面将在3秒后刷新...")
+                        st.rerun()
                     except Exception as e:
-                        st.error(f"认证过程出错: {str(e)}")
-                        return
+                        st.error(f"认证失败：{str(e)}")
+                        st.error("""
+                        请检查：
+                        1. URL是否完整复制
+                        2. URL中是否包含code参数
+                        3. 授权码是否已过期（授权码只能使用一次）
+                        
+                        如果问题持续，请尝试重新获取新的授权码。
+                        """)
+                return
             
             # 保存到session state
             st.session_state.oauth_credentials = self.creds
@@ -114,17 +159,19 @@ class GoogleAuthManager:
             return st.session_state.user_email
         
         import requests
-        response = requests.get(
-            'https://www.googleapis.com/oauth2/v2/userinfo',
-            headers={'Authorization': f'Bearer {self.creds.token}'}
-        )
-        
-        if response.status_code == 200:
+        try:
+            response = requests.get(
+                'https://www.googleapis.com/oauth2/v2/userinfo',
+                headers={'Authorization': f'Bearer {self.creds.token}'}
+            )
+            response.raise_for_status()  # 抛出HTTP错误
+            
             email = response.json().get('email')
-            # 保存email到session state
             if email:
                 st.session_state.user_email = email
-            return email
+                return email
+        except Exception as e:
+            st.error(f"获取用户信息失败：{str(e)}")
         return None
 
 def login_required(func):
@@ -145,8 +192,41 @@ def login_required(func):
         return func(*args, **kwargs)
     return wrapper
 
+def init_auth():
+    """初始化认证系统"""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    
+    # 本地开发环境自动登录
+    if is_local_env():
+        if not st.session_state.authenticated:
+            st.session_state.authenticated = True
+            st.session_state.user_email = st.secrets["google_oauth"]["allowed_emails"][0]  # 使用第一个允许的邮箱
+            st.success(f"本地开发环境：已自动以 {st.session_state.user_email} 登录")
+        return True
+    
+    # 生产环境正常的认证流程
+    if not st.session_state.authenticated and 'oauth_credentials' in st.session_state:
+        auth_manager = GoogleAuthManager()
+        email = auth_manager.get_user_email()
+        
+        if email and email in ALLOWED_EMAILS:
+            st.session_state.authenticated = True
+            st.session_state.user_email = email
+            return True
+    
+    if not st.session_state.authenticated:
+        show_login_page()
+        return False
+    
+    return True
+
 def show_login_page():
     """显示登录页面"""
+    # 本地开发环境跳过登录页面
+    if is_local_env():
+        return
+    
     st.title("登录")
     
     # 尝试从session state自动登录
@@ -174,27 +254,6 @@ def show_login_page():
             st.rerun()
         else:
             st.error("抱歉，您的Google账号未被授权使用此应用。")
-
-def init_auth():
-    """初始化认证系统"""
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    
-    # 如果未登录，尝试自动登录
-    if not st.session_state.authenticated and 'oauth_credentials' in st.session_state:
-        auth_manager = GoogleAuthManager()
-        email = auth_manager.get_user_email()
-        
-        if email and email in ALLOWED_EMAILS:
-            st.session_state.authenticated = True
-            st.session_state.user_email = email
-            return True
-    
-    if not st.session_state.authenticated:
-        show_login_page()
-        return False
-    
-    return True
 
 def show_setup_instructions():
     """显示设置说明"""
