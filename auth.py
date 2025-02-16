@@ -18,6 +18,10 @@ SCOPES = [
 # 从Streamlit secrets获取配置
 ALLOWED_EMAILS = set(st.secrets["google_oauth"]["allowed_emails"])
 
+def is_cloud_env():
+    """检查是否在Streamlit Cloud环境中运行"""
+    return os.getenv('STREAMLIT_CLOUD_ENV') is not None
+
 def try_port(flow, start_port: int = 8502, max_attempts: int = 3) -> Optional[Credentials]:
     """尝试在不同端口运行OAuth服务器"""
     for port in range(start_port, start_port + max_attempts):
@@ -64,14 +68,38 @@ class GoogleAuthManager:
                     redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
                 )
                 
-                try:
-                    self.creds = try_port(flow)
-                    if not self.creds:
-                        st.error("无法启动认证服务器，请检查端口是否被占用。")
-                        return
-                except Exception as e:
-                    st.error(f"认证过程出错: {str(e)}")
+                # 根据环境选择不同的认证方式
+                if is_cloud_env():
+                    # 云环境：使用授权URL和手动输入code的方式
+                    auth_url = flow.authorization_url()[0]
+                    
+                    st.markdown(f"""
+                    ### Google 登录
+                    1. [点击此处访问Google授权页面]({auth_url})
+                    2. 登录并授权后，将重定向URL中的code参数复制到下面的输入框
+                    """)
+                    
+                    code = st.text_input("请输入授权码：")
+                    if code:
+                        try:
+                            flow.fetch_token(code=code)
+                            self.creds = flow.credentials
+                            st.session_state.oauth_credentials = self.creds
+                            st.success("认证成功！")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"认证失败：{str(e)}")
                     return
+                else:
+                    # 本地环境：使用本地服务器
+                    try:
+                        self.creds = try_port(flow)
+                        if not self.creds:
+                            st.error("无法启动认证服务器，请检查端口是否被占用。")
+                            return
+                    except Exception as e:
+                        st.error(f"认证过程出错: {str(e)}")
+                        return
             
             # 保存到session state
             st.session_state.oauth_credentials = self.creds
@@ -135,20 +163,17 @@ def show_login_page():
     
     st.write("请使用允许的Google账号登录")
     
-    if st.button("使用Google账号登录"):
-        auth_manager = GoogleAuthManager()
-        email = auth_manager.get_user_email()
-        
-        if email:
-            if email in ALLOWED_EMAILS:
-                st.session_state.authenticated = True
-                st.session_state.user_email = email
-                st.success(f"欢迎回来，{email}!")
-                st.rerun()
-            else:
-                st.error("抱歉，您的Google账号未被授权使用此应用。")
+    auth_manager = GoogleAuthManager()
+    email = auth_manager.get_user_email()
+    
+    if email:
+        if email in ALLOWED_EMAILS:
+            st.session_state.authenticated = True
+            st.session_state.user_email = email
+            st.success(f"欢迎回来，{email}!")
+            st.rerun()
         else:
-            st.error("登录失败，请重试。")
+            st.error("抱歉，您的Google账号未被授权使用此应用。")
 
 def init_auth():
     """初始化认证系统"""
