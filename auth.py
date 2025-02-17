@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 import sys
+import logging
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 from google.oauth2.credentials import Credentials
@@ -10,6 +11,9 @@ from google.auth.transport.requests import Request
 import pickle
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+# 配置日志记录
+logger = logging.getLogger(__name__)
 
 # 配置
 SCOPES = [
@@ -31,11 +35,11 @@ def is_local_env() -> bool:
         # 检查主机名
         import socket
         hostname = socket.gethostname()
-        st.write("Debug - Hostname:", hostname)
+        logger.info(f"Current hostname: {hostname}")
         
         # 如果主机名是 localhost，认为是云环境
         if hostname == "localhost":
-            st.write("Debug - Cloud environment detected via hostname")
+            logger.info("Cloud environment detected via hostname")
             return False
             
         # 本地环境的判断条件
@@ -44,11 +48,11 @@ def is_local_env() -> bool:
             hostname.startswith("MacBook")      # Mac 主机名
         )
         
-        st.write("Debug - Final local environment check result:", is_local)
+        logger.info(f"Environment detection result: {'local' if is_local else 'cloud'}")
         return is_local
         
     except Exception as e:
-        st.write("Debug - Error in environment detection:", str(e))
+        logger.error(f"Error in environment detection: {str(e)}")
         # 如果检测失败，默认为云环境（更安全的选择）
         return False
 
