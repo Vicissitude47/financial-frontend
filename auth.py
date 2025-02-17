@@ -222,19 +222,34 @@ def init_auth():
     if is_local_env():
         if not st.session_state.authenticated:
             st.session_state.authenticated = True
-            st.session_state.user_email = st.secrets["google_oauth"]["allowed_emails"][0]  # 使用第一个允许的邮箱
+            st.session_state.user_email = st.secrets["google_oauth"]["allowed_emails"][0]
             logger.info("Auto-login in local environment")
         return True
     
-    # 尝试从cookie恢复会话
+    # 首先检查现有的认证状态
+    if st.session_state.authenticated and 'user_email' in st.session_state:
+        logger.info("Using existing session authentication")
+        return True
+    
+    # 尝试从cookie或session state恢复会话
     if not st.session_state.authenticated:
         creds, email = load_auth_from_cookie()
         if creds and email and email in ALLOWED_EMAILS:
-            st.session_state.oauth_credentials = creds
-            st.session_state.user_email = email
-            st.session_state.authenticated = True
-            logger.info("Session restored from cookie")
-            return True
+            try:
+                # 验证凭据是否仍然有效
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                
+                st.session_state.oauth_credentials = creds
+                st.session_state.user_email = email
+                st.session_state.authenticated = True
+                logger.info("Session restored successfully")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to refresh credentials: {str(e)}")
+                # 清除无效的认证信息
+                if 'auth_backup' in st.session_state:
+                    del st.session_state.auth_backup
     
     # 生产环境正常的认证流程
     if not st.session_state.authenticated and 'oauth_credentials' in st.session_state:
@@ -244,7 +259,7 @@ def init_auth():
         if email and email in ALLOWED_EMAILS:
             st.session_state.authenticated = True
             st.session_state.user_email = email
-            # 保存认证信息到cookie
+            # 保存认证信息到cookie和session state
             save_auth_to_cookie(auth_manager.creds, email)
             return True
     
@@ -304,10 +319,66 @@ def show_setup_instructions():
     完成这些步骤后，重启应用即可使用Google登录。
     """)
 
-def load_auth_from_cookie() -> Tuple[Optional[Credentials], Optional[str]]:
-    """从cookie加载认证信息"""
+def save_auth_to_cookie(creds: Credentials, email: str):
+    """将认证信息保存到cookie"""
     try:
-        # 获取cookie
+        # 序列化凭据
+        creds_bytes = pickle.dumps(creds)
+        creds_b64 = base64.b64encode(creds_bytes).decode('utf-8')
+        
+        # 使用 Streamlit 的组件来设置 cookie
+        st.markdown(f"""
+            <script type="text/javascript">
+                function setCookie(name, value, days) {{
+                    var expires = "";
+                    if (days) {{
+                        var date = new Date();
+                        date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+                        expires = "; expires=" + date.toUTCString();
+                    }}
+                    document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
+                }}
+                
+                // 设置认证 cookie
+                setCookie('auth_creds', '{creds_b64}', 7);
+                setCookie('auth_email', '{email}', 7);
+                
+                // 通知 Streamlit 更新
+                setTimeout(function() {{
+                    window.parent.postMessage({{
+                        type: "streamlit:setComponentValue",
+                        value: true
+                    }}, "*");
+                }}, 100);
+            </script>
+        """, unsafe_allow_html=True)
+        
+        # 保存到 session_state 作为备份
+        if 'auth_backup' not in st.session_state:
+            st.session_state.auth_backup = {}
+        st.session_state.auth_backup = {
+            'creds': creds,
+            'email': email,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        logger.info("Auth credentials saved to cookie and session state")
+    except Exception as e:
+        logger.error(f"Failed to save auth to cookie: {str(e)}")
+
+def load_auth_from_cookie() -> Tuple[Optional[Credentials], Optional[str]]:
+    """从cookie或session state加载认证信息"""
+    try:
+        # 首先尝试从 session_state 恢复
+        if 'auth_backup' in st.session_state:
+            backup = st.session_state.auth_backup
+            timestamp = datetime.fromisoformat(backup['timestamp'])
+            # 检查备份是否在7天内
+            if datetime.now() - timestamp < timedelta(days=7):
+                logger.info("Auth credentials restored from session state")
+                return backup['creds'], backup['email']
+        
+        # 然后尝试从 cookie 恢复
         if "cookie" in st.query_params:
             cookies = dict(item.split("=") for item in st.query_params["cookie"].split("; "))
             
@@ -318,28 +389,17 @@ def load_auth_from_cookie() -> Tuple[Optional[Credentials], Optional[str]]:
                 creds = pickle.loads(creds_bytes)
                 
                 email = cookies["auth_email"]
-                logger.info("Auth credentials loaded from cookie")
+                
+                # 保存到 session_state 作为备份
+                st.session_state.auth_backup = {
+                    'creds': creds,
+                    'email': email,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                logger.info("Auth credentials restored from cookie")
                 return creds, email
     except Exception as e:
         logger.error(f"Failed to load auth from cookie: {str(e)}")
     
-    return None, None
-
-def save_auth_to_cookie(creds: Credentials, email: str):
-    """将认证信息保存到cookie"""
-    try:
-        # 序列化凭据
-        creds_bytes = pickle.dumps(creds)
-        creds_b64 = base64.b64encode(creds_bytes).decode('utf-8')
-        
-        # 设置cookie，7天过期
-        cookie_expiry = (datetime.now() + timedelta(days=7)).strftime("%a, %d %b %Y %H:%M:%S GMT")
-        st.markdown(f"""
-            <script type="text/javascript">
-                document.cookie = "auth_creds={creds_b64}; expires={cookie_expiry}; path=/";
-                document.cookie = "auth_email={email}; expires={cookie_expiry}; path=/";
-            </script>
-        """, unsafe_allow_html=True)
-        logger.info("Auth credentials saved to cookie")
-    except Exception as e:
-        logger.error(f"Failed to save auth to cookie: {str(e)}") 
+    return None, None 
