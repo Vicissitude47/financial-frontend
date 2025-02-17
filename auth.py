@@ -28,22 +28,44 @@ def is_cloud_env() -> bool:
 def is_local_env() -> bool:
     """检查是否在本地开发环境中运行"""
     try:
-        # 检查环境变量（Streamlit Cloud 会设置这个环境变量）
+        # 检查是否在 Streamlit Cloud 上运行
         if os.environ.get("STREAMLIT_DEPLOYMENT_URL"):
             st.write("Debug - Cloud environment detected via STREAMLIT_DEPLOYMENT_URL")
             return False
+            
+        # 检查当前URL
+        try:
+            import streamlit.web.server.server as server
+            current_url = server.get_url()
+            st.write("Debug - Current URL:", current_url)
+            if "streamlit.app" in current_url:
+                st.write("Debug - Cloud environment detected via URL")
+                return False
+        except:
+            st.write("Debug - Could not get current URL")
             
         # 检查主机名
         import socket
         hostname = socket.gethostname()
         st.write("Debug - Hostname:", hostname)
         
+        # 检查是否在 Streamlit Cloud 上运行的其他标志
+        is_cloud = any([
+            bool(os.environ.get("STREAMLIT_PUBLIC_PORT")),  # Streamlit Cloud 设置
+            bool(os.environ.get("STREAMLIT_SERVER_PORT")),  # Streamlit Cloud 设置
+            bool(os.environ.get("STREAMLIT_SERVER_ADDRESS")),  # Streamlit Cloud 设置
+            "streamlit.app" in hostname.lower(),      # Streamlit Cloud 主机名
+        ])
+        
+        if is_cloud:
+            st.write("Debug - Cloud environment detected via environment check")
+            return False
+            
         # 本地环境的判断条件
         is_local = (
             hostname.startswith("DESKTOP-") or  # Windows 桌面主机名
             hostname.startswith("MacBook") or   # Mac 主机名
-            "local" in hostname.lower() or
-            "localhost" in hostname.lower()
+            hostname == "localhost"
         )
         
         st.write("Debug - Final local environment check result:", is_local)
@@ -51,8 +73,8 @@ def is_local_env() -> bool:
         
     except Exception as e:
         st.write("Debug - Error in environment detection:", str(e))
-        # 如果检测失败，默认为本地环境（更安全的选择）
-        return True
+        # 如果检测失败，默认为云环境（更安全的选择）
+        return False
 
 def try_port(flow, start_port: int = 8502, max_attempts: int = 3) -> Optional[Credentials]:
     """尝试在不同端口运行OAuth服务器"""
