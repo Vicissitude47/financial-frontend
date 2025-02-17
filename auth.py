@@ -3,12 +3,13 @@ import json
 import os
 import sys
 import logging
+import pickle
+import base64
 from typing import Optional, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-import pickle
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -212,6 +213,45 @@ def login_required(func):
         return func(*args, **kwargs)
     return wrapper
 
+def save_auth_to_cookie(creds: Credentials, email: str):
+    """将认证信息保存到cookie"""
+    try:
+        # 序列化凭据
+        creds_bytes = pickle.dumps(creds)
+        creds_b64 = base64.b64encode(creds_bytes).decode('utf-8')
+        
+        # 设置cookie，7天过期
+        cookie_expiry = (datetime.now() + timedelta(days=7)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        st.markdown(f"""
+            <script type="text/javascript">
+                document.cookie = "auth_creds={creds_b64}; expires={cookie_expiry}; path=/";
+                document.cookie = "auth_email={email}; expires={cookie_expiry}; path=/";
+            </script>
+        """, unsafe_allow_html=True)
+        logger.info("Auth credentials saved to cookie")
+    except Exception as e:
+        logger.error(f"Failed to save auth to cookie: {str(e)}")
+
+def load_auth_from_cookie() -> Tuple[Optional[Credentials], Optional[str]]:
+    """从cookie加载认证信息"""
+    try:
+        # 获取cookie
+        cookies = dict(item.split("=") for item in st.experimental_get_query_params().get("cookie", [""])[0].split("; "))
+        
+        if "auth_creds" in cookies and "auth_email" in cookies:
+            # 反序列化凭据
+            creds_b64 = cookies["auth_creds"]
+            creds_bytes = base64.b64decode(creds_b64)
+            creds = pickle.loads(creds_bytes)
+            
+            email = cookies["auth_email"]
+            logger.info("Auth credentials loaded from cookie")
+            return creds, email
+    except Exception as e:
+        logger.error(f"Failed to load auth from cookie: {str(e)}")
+    
+    return None, None
+
 def init_auth():
     """初始化认证系统"""
     if "authenticated" not in st.session_state:
@@ -221,9 +261,19 @@ def init_auth():
     if is_local_env():
         if not st.session_state.authenticated:
             st.session_state.authenticated = True
-            st.session_state.user_email = st.secrets["google_oauth"]["allowed_emails"][0]  # 使用第一个允许的邮箱
-            st.success(f"本地开发环境：已自动以 {st.session_state.user_email} 登录")
+            st.session_state.user_email = st.secrets["google_oauth"]["allowed_emails"][0]
+            logger.info("Auto-login in local environment")
         return True
+    
+    # 尝试从cookie恢复会话
+    if not st.session_state.authenticated:
+        creds, email = load_auth_from_cookie()
+        if creds and email and email in ALLOWED_EMAILS:
+            st.session_state.oauth_credentials = creds
+            st.session_state.user_email = email
+            st.session_state.authenticated = True
+            logger.info("Session restored from cookie")
+            return True
     
     # 生产环境正常的认证流程
     if not st.session_state.authenticated and 'oauth_credentials' in st.session_state:
@@ -233,6 +283,8 @@ def init_auth():
         if email and email in ALLOWED_EMAILS:
             st.session_state.authenticated = True
             st.session_state.user_email = email
+            # 保存认证信息到cookie
+            save_auth_to_cookie(auth_manager.creds, email)
             return True
     
     if not st.session_state.authenticated:
