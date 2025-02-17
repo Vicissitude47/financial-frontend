@@ -6,7 +6,6 @@ import json
 import os
 import re
 import boto3
-from auth import init_auth, login_required
 import io
 
 # 设置页面配置
@@ -370,7 +369,6 @@ def show_rules_management(rules, on_rule_update, df=None):
         if to_delete > 0:
             st.info(f"已选中 {to_delete} 条规则待删除")
 
-@login_required
 def main():
     st.title("Bella x Nemo's Financial")
     
@@ -669,6 +667,4 @@ def main():
         show_rules_management(st.session_state.category_rules, lambda new_rules: st.session_state.category_rules.update(new_rules), df)
 
 if __name__ == "__main__":
-    # 初始化认证系统
-    if init_auth():
-        main() 
+    main() 
