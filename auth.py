@@ -149,10 +149,9 @@ class GoogleAuthManager:
                 """, unsafe_allow_html=True)
                 
                 # 检查URL中是否包含授权码
-                query_params = st.experimental_get_query_params()
-                if 'code' in query_params:
+                if 'code' in st.query_params:
                     try:
-                        code = query_params['code'][0]
+                        code = st.query_params['code']
                         flow.fetch_token(code=code)
                         self.creds = flow.credentials
                         st.session_state.oauth_credentials = self.creds
