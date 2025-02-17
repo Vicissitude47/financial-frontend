@@ -65,10 +65,13 @@ def try_port(flow, start_port: int = 8502, max_attempts: int = 3) -> Optional[Cr
 
 def get_auth_url(client_config: Dict) -> Tuple[str, InstalledAppFlow]:
     """生成授权URL并返回flow对象"""
+    # 获取当前应用的URL
+    app_url = st.secrets["google_oauth"]["redirect_uri"].split("/oauth2callback")[0]
+    
     flow = InstalledAppFlow.from_client_config(
         client_config,
         SCOPES,
-        redirect_uri=st.secrets["google_oauth"]["redirect_uri"]
+        redirect_uri=app_url  # 直接使用应用的根URL
     )
     
     auth_url, _ = flow.authorization_url(
@@ -107,7 +110,7 @@ class GoogleAuthManager:
                     "web": {
                         "client_id": st.secrets["google_oauth"]["client_id"],
                         "client_secret": st.secrets["google_oauth"]["client_secret"],
-                        "redirect_uris": [st.secrets["google_oauth"]["redirect_uri"]],
+                        "redirect_uris": [st.secrets["google_oauth"]["redirect_uri"].split("/oauth2callback")[0]],  # 使用应用根URL
                         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                         "token_uri": "https://oauth2.googleapis.com/token"
                     }
@@ -117,37 +120,39 @@ class GoogleAuthManager:
                 
                 # 显示授权说明
                 st.markdown("""
-                ### Google 登录说明
+                ### 使用 Google 账号登录
                 
-                1. **右键点击**下方链接，选择"在新标签页中打开"
-                2. 使用允许的Google账号登录并授权
-                3. 在新标签页中，当看到"此站点无法访问"时，从地址栏复制完整的URL
-                4. 将URL粘贴到下方输入框
-                
-                **提示：** 
-                - 一定要右键在新标签页中打开，否则URL会消失
-                - 看到"此站点无法访问"是正常的，此时URL中已包含授权码
+                点击下方按钮使用 Google 账号登录。只有授权的邮箱地址可以访问此应用。
                 """)
                 
-                # 创建两列布局
-                col1, col2 = st.columns([1, 2])
+                # 使用单列布局，让按钮更显眼
+                st.markdown(f"""
+                <a href="{auth_url}" target="_blank">
+                    <div style="
+                        display: inline-block;
+                        padding: 0.5em 1em;
+                        color: white;
+                        background-color: #4285f4;
+                        border-radius: 4px;
+                        text-decoration: none;
+                        margin: 1em 0;
+                        cursor: pointer;
+                        ">
+                        <img src="https://www.google.com/favicon.ico" style="
+                            height: 1.2em;
+                            margin-right: 0.5em;
+                            vertical-align: middle;
+                            ">
+                        使用 Google 账号登录
+                    </div>
+                </a>
+                """, unsafe_allow_html=True)
                 
-                with col1:
-                    st.markdown(f"[👉 点击此处访问授权页面]({auth_url})")
-                    st.caption("记得右键在新标签页中打开 ↗")
-                
-                with col2:
-                    redirect_url = st.text_input(
-                        "请输入重定向URL：",
-                        help="从浏览器地址栏复制整个URL（包含code参数）"
-                    )
-                    
-                if redirect_url:
+                # 检查URL中是否包含授权码
+                query_params = st.experimental_get_query_params()
+                if 'code' in query_params:
                     try:
-                        # 从URL中提取授权码
-                        parsed_url = urlparse(redirect_url)
-                        code = parse_qs(parsed_url.query)['code'][0]
-                        
+                        code = query_params['code'][0]
                         flow.fetch_token(code=code)
                         self.creds = flow.credentials
                         st.session_state.oauth_credentials = self.creds
@@ -155,14 +160,7 @@ class GoogleAuthManager:
                         st.rerun()
                     except Exception as e:
                         st.error(f"认证失败：{str(e)}")
-                        st.error("""
-                        请检查：
-                        1. URL是否完整复制
-                        2. URL中是否包含code参数
-                        3. 授权码是否已过期（授权码只能使用一次）
-                        
-                        如果问题持续，请尝试重新获取新的授权码。
-                        """)
+                        st.error("请重新尝试登录。")
                 return
             
             # 保存到session state
