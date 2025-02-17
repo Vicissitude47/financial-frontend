@@ -20,18 +20,39 @@ SCOPES = [
 # 从Streamlit secrets获取配置
 ALLOWED_EMAILS = set(st.secrets["google_oauth"]["allowed_emails"])
 
-def is_cloud_env():
-    """检查是否在Streamlit Cloud环境中运行"""
-    return (
-        'STREAMLIT_CLOUD_ENV' in os.environ or  # Streamlit Cloud 特定环境变量
-        'STREAMLIT_SHARING_PORT' in os.environ or  # Streamlit Sharing 特定环境变量
-        'STREAMLIT_SERVER_PORT' in os.environ or  # Streamlit 服务器端口
-        not sys.stdout.isatty()  # 检查是否有交互式终端
-    )
+def is_cloud_env() -> bool:
+    """检查是否在云环境中运行"""
+    # 如果不是本地环境，就认为是云环境
+    return not is_local_env()
 
 def is_local_env() -> bool:
     """检查是否在本地开发环境中运行"""
-    return 'STREAMLIT_CLOUD_ENV' not in os.environ
+    try:
+        # 检查环境变量（Streamlit Cloud 会设置这个环境变量）
+        if os.environ.get("STREAMLIT_DEPLOYMENT_URL"):
+            st.write("Debug - Cloud environment detected via STREAMLIT_DEPLOYMENT_URL")
+            return False
+            
+        # 检查主机名
+        import socket
+        hostname = socket.gethostname()
+        st.write("Debug - Hostname:", hostname)
+        
+        # 本地环境的判断条件
+        is_local = (
+            hostname.startswith("DESKTOP-") or  # Windows 桌面主机名
+            hostname.startswith("MacBook") or   # Mac 主机名
+            "local" in hostname.lower() or
+            "localhost" in hostname.lower()
+        )
+        
+        st.write("Debug - Final local environment check result:", is_local)
+        return is_local
+        
+    except Exception as e:
+        st.write("Debug - Error in environment detection:", str(e))
+        # 如果检测失败，默认为本地环境（更安全的选择）
+        return True
 
 def try_port(flow, start_port: int = 8502, max_attempts: int = 3) -> Optional[Credentials]:
     """尝试在不同端口运行OAuth服务器"""
