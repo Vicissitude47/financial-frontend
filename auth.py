@@ -28,44 +28,20 @@ def is_cloud_env() -> bool:
 def is_local_env() -> bool:
     """检查是否在本地开发环境中运行"""
     try:
-        # 检查是否在 Streamlit Cloud 上运行
-        if os.environ.get("STREAMLIT_DEPLOYMENT_URL"):
-            st.write("Debug - Cloud environment detected via STREAMLIT_DEPLOYMENT_URL")
-            return False
-            
-        # 检查当前URL
-        try:
-            import streamlit.web.server.server as server
-            current_url = server.get_url()
-            st.write("Debug - Current URL:", current_url)
-            if "streamlit.app" in current_url:
-                st.write("Debug - Cloud environment detected via URL")
-                return False
-        except:
-            st.write("Debug - Could not get current URL")
-            
         # 检查主机名
         import socket
         hostname = socket.gethostname()
         st.write("Debug - Hostname:", hostname)
         
-        # 检查是否在 Streamlit Cloud 上运行的其他标志
-        is_cloud = any([
-            bool(os.environ.get("STREAMLIT_PUBLIC_PORT")),  # Streamlit Cloud 设置
-            bool(os.environ.get("STREAMLIT_SERVER_PORT")),  # Streamlit Cloud 设置
-            bool(os.environ.get("STREAMLIT_SERVER_ADDRESS")),  # Streamlit Cloud 设置
-            "streamlit.app" in hostname.lower(),      # Streamlit Cloud 主机名
-        ])
-        
-        if is_cloud:
-            st.write("Debug - Cloud environment detected via environment check")
+        # 如果主机名是 localhost，认为是云环境
+        if hostname == "localhost":
+            st.write("Debug - Cloud environment detected via hostname")
             return False
             
         # 本地环境的判断条件
         is_local = (
             hostname.startswith("DESKTOP-") or  # Windows 桌面主机名
-            hostname.startswith("MacBook") or   # Mac 主机名
-            hostname == "localhost"
+            hostname.startswith("MacBook")      # Mac 主机名
         )
         
         st.write("Debug - Final local environment check result:", is_local)
